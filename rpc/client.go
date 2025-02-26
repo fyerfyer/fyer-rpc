@@ -2,14 +2,16 @@ package rpc
 
 import (
 	"context"
-	"encoding/json"
 	"net"
+	"sync/atomic"
+
+	"github.com/fyerfyer/fyer-rpc/protocol"
+	"github.com/fyerfyer/fyer-rpc/protocol/codec"
 )
 
 type Client struct {
-	conn    net.Conn
-	encoder *json.Encoder
-	decoder *json.Decoder
+	conn      *Connection
+	messageID uint64
 }
 
 func NewClient(address string) (*Client, error) {
@@ -19,46 +21,53 @@ func NewClient(address string) (*Client, error) {
 	}
 
 	return &Client{
-		conn:    conn,
-		encoder: json.NewEncoder(conn),
-		decoder: json.NewDecoder(conn),
+		conn: NewConnection(conn),
 	}, nil
 }
 
 func (c *Client) Call(serviceName, methodName string, args interface{}) ([]byte, error) {
-	// 序列化参数
-	argBytes, err := json.Marshal(args)
+	// 序列化请求参数
+	serializer := codec.GetCodec(codec.JSON) // 默认使用JSON
+	argBytes, err := serializer.Encode(args)
 	if err != nil {
 		return nil, NewRPCError(ErrCodeInvalidParam, "failed to marshal request: "+err.Error())
 	}
 
-	// 发送请求
-	req := Request{
+	// 构造元数据
+	metadata := &protocol.Metadata{
 		ServiceName: serviceName,
 		MethodName:  methodName,
-		Args:        argBytes,
 	}
 
-	if err := c.encoder.Encode(req); err != nil {
+	// 生成消息ID
+	messageID := atomic.AddUint64(&c.messageID, 1)
+
+	// 发送请求
+	err = c.conn.Write(
+		serviceName,
+		methodName,
+		protocol.TypeRequest,
+		protocol.SerializationTypeJSON,
+		messageID,
+		metadata,
+		argBytes,
+	)
+	if err != nil {
 		return nil, NewRPCError(ErrCodeInternal, "failed to send request: "+err.Error())
 	}
 
 	// 接收响应
-	var resp Response
-	if err := c.decoder.Decode(&resp); err != nil {
+	resp, err := c.conn.Read()
+	if err != nil {
 		return nil, NewRPCError(ErrCodeInternal, "failed to receive response: "+err.Error())
 	}
 
 	// 检查响应中的错误
-	if resp.Error != "" {
-		return nil, NewRPCError(ErrCodeInternal, resp.Error)
+	if resp.Metadata != nil && resp.Metadata.Error != "" {
+		return nil, NewRPCError(ErrCodeInternal, resp.Metadata.Error)
 	}
 
-	if resp.Data == nil {
-		return nil, NewRPCError(ErrCodeInternal, "empty response data")
-	}
-
-	return resp.Data, nil
+	return resp.Payload, nil
 }
 
 // CallWithTimeout 带超时的RPC调用

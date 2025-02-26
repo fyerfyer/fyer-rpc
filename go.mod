@@ -2,7 +2,10 @@ module github.com/fyerfyer/fyer-rpc
 
 go 1.23.5
 
-require github.com/stretchr/testify v1.10.0
+require (
+	github.com/stretchr/testify v1.10.0
+	google.golang.org/protobuf v1.36.5
+)
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect

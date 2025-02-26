@@ -2,19 +2,26 @@ package rpc
 
 import (
 	"context"
-	"encoding/json"
 	"net"
 	"reflect"
+
+	"github.com/fyerfyer/fyer-rpc/protocol"
 )
 
 type Server struct {
-	services map[string]*ServiceDesc
+	services          map[string]*ServiceDesc
+	serializationType uint8
 }
 
 func NewServer() *Server {
 	return &Server{
 		services: make(map[string]*ServiceDesc),
 	}
+}
+
+// SetSerializationType 设置服务器使用的序列化类型
+func (s *Server) SetSerializationType(serializationType uint8) {
+	s.serializationType = serializationType
 }
 
 // RegisterService 注册服务实例
@@ -52,39 +59,41 @@ func (s *Server) RegisterService(service interface{}) error {
 // handleConnection 处理每个客户端连接
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
-	decoder := json.NewDecoder(conn)
-	encoder := json.NewEncoder(conn)
+
+	connection := NewConnection(conn)
+	defer connection.Close()
 
 	for {
-		var req Request
-		if err := decoder.Decode(&req); err != nil {
+		// 读取请求消息
+		message, err := connection.Read()
+		if err != nil {
 			return
 		}
 
 		// 查找服务
-		serviceDesc, ok := s.services[req.ServiceName]
+		serviceDesc, ok := s.services[message.Metadata.ServiceName]
 		if !ok {
-			encoder.Encode(Response{
-				Error: NewRPCError(ErrCodeNotFound, "service not found").Error(),
-			})
+			s.sendError(connection, message.Header.MessageID, "service not found")
 			continue
 		}
 
 		// 查找方法
-		method, ok := serviceDesc.Methods[req.MethodName]
+		method, ok := serviceDesc.Methods[message.Metadata.MethodName]
 		if !ok {
-			encoder.Encode(Response{
-				Error: NewRPCError(ErrCodeNotFound, "method not found").Error(),
-			})
+			s.sendError(connection, message.Header.MessageID, "method not found")
 			continue
 		}
 
 		// 解码参数
+		serializer := protocol.GetCodecByType(message.Header.SerializationType)
+		if serializer == nil {
+			s.sendError(connection, message.Header.MessageID, "unsupported serialization type")
+			continue
+		}
+
 		reqArg := reflect.New(method.Type.In(2).Elem()).Interface()
-		if err := json.Unmarshal(req.Args, reqArg); err != nil {
-			encoder.Encode(Response{
-				Error: NewRPCError(ErrCodeInvalidParam, "invalid request parameters").Error(),
-			})
+		if err := serializer.Decode(message.Payload, reqArg); err != nil {
+			s.sendError(connection, message.Header.MessageID, "invalid request parameters")
 			continue
 		}
 
@@ -99,23 +108,46 @@ func (s *Server) handleConnection(conn net.Conn) {
 		})
 
 		// 处理返回值
-		var resp Response
+		var respPayload []byte
+		var respErr string
+
 		if !results[1].IsNil() { // 如果有错误
-			resp.Error = results[1].Interface().(error).Error()
+			respErr = results[1].Interface().(error).Error()
 		} else {
 			// 序列化返回值
-			data, err := json.Marshal(results[0].Interface())
+			respPayload, err = serializer.Encode(results[0].Interface())
 			if err != nil {
-				resp.Error = NewRPCError(ErrCodeInternal, "failed to marshal response").Error()
-			} else {
-				resp.Data = data
+				s.sendError(connection, message.Header.MessageID, "failed to marshal response")
+				continue
 			}
 		}
 
-		if err := encoder.Encode(resp); err != nil {
+		// 发送响应
+		err = connection.Write(
+			message.Metadata.ServiceName,
+			message.Metadata.MethodName,
+			protocol.TypeResponse,
+			message.Header.SerializationType,
+			message.Header.MessageID,
+			&protocol.Metadata{Error: respErr},
+			respPayload,
+		)
+		if err != nil {
 			return
 		}
 	}
+}
+
+func (s *Server) sendError(conn *Connection, messageID uint64, errMsg string) error {
+	return conn.Write(
+		"",
+		"",
+		protocol.TypeResponse,
+		protocol.SerializationTypeJSON,
+		messageID,
+		&protocol.Metadata{Error: errMsg},
+		nil,
+	)
 }
 
 func (s *Server) Start(address string) error {

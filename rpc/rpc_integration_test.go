@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fyerfyer/fyer-rpc/protocol"
 	"github.com/fyerfyer/fyer-rpc/rpc/example"
 
 	"github.com/stretchr/testify/assert"
@@ -12,56 +13,80 @@ import (
 )
 
 func TestRPCIntegration(t *testing.T) {
-	// 启动服务器
-	server := NewServer()
-	err := server.RegisterService(&example.UserServiceImpl{})
-	require.NoError(t, err)
+	tests := []struct {
+		name              string
+		serializationType uint8
+		addr              string
+	}{
+		{
+			name:              "JSON serialization",
+			serializationType: protocol.SerializationTypeJSON,
+			addr:              ":8081",
+		},
+		{
+			name:              "Protobuf serialization",
+			serializationType: protocol.SerializationTypeProtobuf,
+			addr:              ":8082",
+		},
+	}
 
-	go func() {
-		err := server.Start(":8081")
-		if err != nil {
-			t.Logf("server stopped: %v", err)
-		}
-	}()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// 启动服务器
+			server := NewServer()
+			err := server.RegisterService(&example.UserServiceImpl{})
+			require.NoError(t, err)
 
-	time.Sleep(time.Second)
+			// 设置服务器使用的序列化类型
+			server.SetSerializationType(tt.serializationType)
 
-	// 创建客户端代理
-	var userService example.UserService
-	err = InitProxy(":8081", &userService)
-	require.NoError(t, err)
+			go func() {
+				err := server.Start(tt.addr)
+				if err != nil {
+					t.Logf("server stopped: %v", err)
+				}
+			}()
 
-	// 测试成功场景
-	t.Run("success case", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+			time.Sleep(time.Second)
 
-		resp, err := userService.GetById(ctx, &example.GetByIdReq{Id: 123})
-		require.NoError(t, err)
-		assert.Equal(t, &example.GetByIdResp{
-			User: &example.User{
-				Id:   123,
-				Name: "test",
-			},
-		}, resp)
-	})
+			// 创建客户端代理
+			var userService example.UserService
+			err = InitProxy(":8081", &userService)
+			require.NoError(t, err)
 
-	// 测试超时场景
-	t.Run("timeout case", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
-		defer cancel()
-		time.Sleep(2 * time.Millisecond) // 确保超时
+			// 测试成功场景
+			t.Run("success case", func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
 
-		_, err := userService.GetById(ctx, &example.GetByIdReq{Id: 123})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "timeout")
-	})
+				resp, err := userService.GetById(ctx, &example.GetByIdReq{Id: 123})
+				require.NoError(t, err)
+				assert.Equal(t, &example.GetByIdResp{
+					User: &example.User{
+						Id:   123,
+						Name: "test",
+					},
+				}, resp)
+			})
 
-	// 测试不存在的用户
-	t.Run("not found case", func(t *testing.T) {
-		ctx := context.Background()
-		resp, err := userService.GetById(ctx, &example.GetByIdReq{Id: 456})
-		require.NoError(t, err)
-		assert.Nil(t, resp.User)
-	})
+			// 测试超时场景
+			t.Run("timeout case", func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+				defer cancel()
+				time.Sleep(2 * time.Millisecond) // 确保超时
+
+				_, err := userService.GetById(ctx, &example.GetByIdReq{Id: 123})
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "timeout")
+			})
+
+			// 测试不存在的用户
+			t.Run("not found case", func(t *testing.T) {
+				ctx := context.Background()
+				resp, err := userService.GetById(ctx, &example.GetByIdReq{Id: 456})
+				require.NoError(t, err)
+				assert.Nil(t, resp.User)
+			})
+		})
+	}
 }
