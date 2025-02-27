@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+option go_package = ".;helloworld";
+
+// GreetService 定义一个简单的问候服务
+service GreetService {
+  // SayHello 发送问候
+  rpc SayHello(HelloRequest) returns (HelloResponse) {}
+  // GetGreetStats 获取问候统计信息
+  rpc GetGreetStats(StatsRequest) returns (StatsResponse) {}
+}
+
+// HelloRequest 问候请求
+message HelloRequest {
+  string name = 1;           // 被问候者姓名
+  string greeting = 2;       // 自定义问候语(可选)
+}
+
+// HelloResponse 问候响应
+message HelloResponse {
+  string message = 1;        // 问候消息
+  int64 greet_time = 2;      // 问候时间戳
+}
+
+// StatsRequest 统计请求
+message StatsRequest {
+  string name = 1;          // 查询指定用户的统计(可选)
+}
+
+// StatsResponse 统计响应
+message StatsResponse {
+  int64 total_greets = 1;   // 总问候次数
+  map<string, int64> greets_by_name = 2;  // 各用户的问候次数
+  int64 last_greet_time = 3;    // 最后一次问候时间
+}

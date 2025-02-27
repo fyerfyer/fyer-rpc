@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/fyerfyer/fyer-rpc/protocol"
-	"github.com/fyerfyer/fyer-rpc/rpc/example"
+	"github.com/fyerfyer/fyer-rpc/rpc/testdata"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,7 +34,7 @@ func TestRPCIntegration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// 启动服务器
 			server := NewServer()
-			err := server.RegisterService(&example.UserServiceImpl{})
+			err := server.RegisterService(&testdata.UserServiceImpl{})
 			require.NoError(t, err)
 
 			// 设置服务器使用的序列化类型
@@ -50,7 +50,7 @@ func TestRPCIntegration(t *testing.T) {
 			time.Sleep(time.Second)
 
 			// 创建客户端代理
-			var userService example.UserService
+			var userService testdata.UserService
 			err = InitProxy(":8081", &userService)
 			require.NoError(t, err)
 
@@ -59,10 +59,10 @@ func TestRPCIntegration(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 
-				resp, err := userService.GetById(ctx, &example.GetByIdReq{Id: 123})
+				resp, err := userService.GetById(ctx, &testdata.GetByIdReq{Id: 123})
 				require.NoError(t, err)
-				assert.Equal(t, &example.GetByIdResp{
-					User: &example.User{
+				assert.Equal(t, &testdata.GetByIdResp{
+					User: &testdata.User{
 						Id:   123,
 						Name: "test",
 					},
@@ -75,7 +75,7 @@ func TestRPCIntegration(t *testing.T) {
 				defer cancel()
 				time.Sleep(2 * time.Millisecond) // 确保超时
 
-				_, err := userService.GetById(ctx, &example.GetByIdReq{Id: 123})
+				_, err := userService.GetById(ctx, &testdata.GetByIdReq{Id: 123})
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "timeout")
 			})
@@ -83,7 +83,7 @@ func TestRPCIntegration(t *testing.T) {
 			// 测试不存在的用户
 			t.Run("not found case", func(t *testing.T) {
 				ctx := context.Background()
-				resp, err := userService.GetById(ctx, &example.GetByIdReq{Id: 456})
+				resp, err := userService.GetById(ctx, &testdata.GetByIdReq{Id: 456})
 				require.NoError(t, err)
 				assert.Nil(t, resp.User)
 			})

@@ -4,7 +4,7 @@
 // 	protoc        v3.19.4
 // source: user.proto
 
-package example
+package testdata
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
