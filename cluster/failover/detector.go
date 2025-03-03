@@ -9,14 +9,14 @@ import (
 	"github.com/fyerfyer/fyer-rpc/naming"
 )
 
-// BaseDetector 所有检测器的基础实现
+// BaseDetector 基础故障检测器
 type BaseDetector struct {
-	statusMap     map[string]Status      // 实例ID -> 状态
-	failureCount  map[string]int         // 实例失败计数
-	successCount  map[string]int         // 实例成功计数
-	timestamps    map[string]time.Time   // 记录实例状态最后更新时间
-	config        *Config                // 故障检测配置
-	mu            sync.RWMutex           // 保护共享数据的互斥锁
+	statusMap    map[string]Status    // 实例ID -> 状态
+	failureCount map[string]int       // 实例失败计数
+	successCount map[string]int       // 实例成功计数
+	timestamps   map[string]time.Time // 记录实例状态最后更新时间
+	config       *Config              // 故障检测配置
+	mu           sync.RWMutex         // 保护共享数据的互斥锁
 }
 
 // NewBaseDetector 创建基础检测器
@@ -138,10 +138,10 @@ func (d *TimeoutDetector) Detect(ctx context.Context, instance *naming.Instance)
 // ErrorRateDetector 基于错误率的故障检测器
 type ErrorRateDetector struct {
 	*BaseDetector
-	requestCount map[string]int // 总请求计数
-	errorCount   map[string]int // 错误请求计数
+	requestCount map[string]int    // 总请求计数
+	errorCount   map[string]int    // 错误请求计数
 	windows      map[string][]bool // 滑动窗口，记录最近的请求成功/失败
-	windowSize   int           // 滑动窗口大小
+	windowSize   int               // 滑动窗口大小
 }
 
 // NewErrorRateDetector 创建基于错误率的故障检测器
@@ -231,11 +231,11 @@ func (d *ErrorRateDetector) Detect(ctx context.Context, instance *naming.Instanc
 type HealthCheckDetector struct {
 	*BaseDetector
 	checker        func(context.Context, *naming.Instance) (bool, error) // 健康检查函数
-	checkInterval  time.Duration // 检查间隔
-	stopCh         chan struct{} // 停止信号
-	instancesCache []*naming.Instance // 检查的实例缓存
-	running        bool           // 是否正在运行
-	runMutex       sync.Mutex     // 保护running字段的互斥锁
+	checkInterval  time.Duration                                         // 检查间隔
+	stopCh         chan struct{}                                         // 停止信号
+	instancesCache []*naming.Instance                                    // 检查的实例缓存
+	running        bool                                                  // 是否正在运行
+	runMutex       sync.Mutex                                            // 保护running字段的互斥锁
 }
 
 // NewHealthCheckDetector 创建健康检查故障检测器

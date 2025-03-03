@@ -2,9 +2,11 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
+	"github.com/fyerfyer/fyer-rpc/cluster/failover"
 	"github.com/fyerfyer/fyer-rpc/discovery/balancer"
 	"github.com/fyerfyer/fyer-rpc/discovery/metrics"
 	"github.com/fyerfyer/fyer-rpc/naming"
@@ -12,18 +14,23 @@ import (
 
 // LoadBalancer 负载均衡器
 type LoadBalancer struct {
-	resolver    *Resolver         // 服务解析器
-	balancer    balancer.Balancer // 负载均衡算法实现
-	metrics     metrics.Metrics   // 指标收集器
-	serviceName string            // 服务名称
-	version     string            // 服务版本
-	updateChan  <-chan struct{}   // 服务更新通知通道
-	closed      chan struct{}     // 关闭信号
-	mu          sync.RWMutex
+	resolver       *Resolver                        // 服务解析器
+	balancer       balancer.Balancer                // 负载均衡算法实现
+	failover       *failover.DefaultFailoverHandler // 故障转移处理器
+	metrics        metrics.Metrics                  // 指标收集器
+	serviceName    string                           // 服务名称
+	version        string                           // 服务版本
+	updateChan     <-chan struct{}                  // 服务更新通知通道
+	closed         chan struct{}                    // 关闭信号
+	enableFailover bool                             // 是否启用故障转移
+	mu             sync.RWMutex
 }
 
+// LoadBalancerOption 负载均衡器配置选项
+type LoadBalancerOption func(*LoadBalancer)
+
 // NewLoadBalancer 创建负载均衡器
-func NewLoadBalancer(serviceName, version string, resolver *Resolver, metrics metrics.Metrics, balancerType balancer.BalancerType) (*LoadBalancer, error) {
+func NewLoadBalancer(serviceName, version string, resolver *Resolver, metrics metrics.Metrics, balancerType balancer.BalancerType, options ...LoadBalancerOption) (*LoadBalancer, error) {
 	// 创建负载均衡器
 	b, err := balancer.Build(&balancer.Config{
 		Type:           balancerType,
@@ -53,13 +60,19 @@ func NewLoadBalancer(serviceName, version string, resolver *Resolver, metrics me
 	}
 
 	lb := &LoadBalancer{
-		resolver:    resolver,
-		balancer:    b,
-		metrics:     metrics,
-		serviceName: serviceName,
-		version:     version,
-		updateChan:  updateChan,
-		closed:      make(chan struct{}),
+		resolver:       resolver,
+		balancer:       b,
+		metrics:        metrics,
+		serviceName:    serviceName,
+		version:        version,
+		updateChan:     updateChan,
+		closed:         make(chan struct{}),
+		enableFailover: false, // 默认不启用故障转移
+	}
+
+	// 应用配置选项
+	for _, option := range options {
+		option(lb)
 	}
 
 	// 启动更新处理
@@ -68,12 +81,92 @@ func NewLoadBalancer(serviceName, version string, resolver *Resolver, metrics me
 	return lb, nil
 }
 
+// WithFailover 启用故障转移功能
+func WithFailover(failoverConfig *failover.Config) LoadBalancerOption {
+	return func(lb *LoadBalancer) {
+		handler, err := failover.NewFailoverHandler(failoverConfig)
+		if err == nil {
+			lb.failover = handler
+			lb.enableFailover = true
+		}
+	}
+}
+
 // Select 选择一个服务实例
 func (lb *LoadBalancer) Select(ctx context.Context) (*naming.Instance, error) {
 	lb.mu.RLock()
 	defer lb.mu.RUnlock()
 
-	return lb.balancer.Select(ctx)
+	if !lb.enableFailover {
+		// 直接使用负载均衡器选择实例
+		return lb.balancer.Select(ctx)
+	}
+
+	// 获取当前可用实例
+	instances, err := lb.resolver.Resolve()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(instances) == 0 {
+		return nil, errors.New("no available instances")
+	}
+
+	// 使用故障转移处理器执行操作
+	// 定义操作函数：使用负载均衡器选择实例
+	operation := func(ctx context.Context, _ *naming.Instance) error {
+		_, err := lb.balancer.Select(ctx)
+		return err
+	}
+
+	// 执行故障转移
+	result, err := lb.failover.Execute(ctx, instances, operation)
+	if err != nil {
+		return nil, err
+	}
+
+	return result.Instance, nil
+}
+
+// SelectWithFailover 选择一个服务实例并执行操作，支持故障转移
+func (lb *LoadBalancer) SelectWithFailover(ctx context.Context, operation func(context.Context, *naming.Instance) error) error {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+
+	if !lb.enableFailover {
+		// 不使用故障转移，直接选择实例并执行操作
+		instance, err := lb.balancer.Select(ctx)
+		if err != nil {
+			return err
+		}
+
+		startTime := time.Now()
+		err = operation(ctx, instance)
+		duration := time.Since(startTime)
+
+		// 反馈结果
+		lb.Feedback(ctx, instance, duration.Milliseconds(), err)
+		return err
+	}
+
+	// 获取当前可用实例
+	instances, err := lb.resolver.Resolve()
+	if err != nil {
+		return err
+	}
+
+	// 使用故障转移处理器执行操作
+	result, err := lb.failover.Execute(ctx, instances, operation)
+	if err != nil {
+		return err
+	}
+
+	// 如果操作成功，更新负载均衡器中的实例状态
+	if result.Success && result.Instance != nil {
+		lb.balancer.Feedback(ctx, result.Instance, result.Duration.Milliseconds(), nil)
+	}
+
+	return nil
 }
 
 // Feedback 反馈调用结果
@@ -81,7 +174,17 @@ func (lb *LoadBalancer) Feedback(ctx context.Context, instance *naming.Instance,
 	lb.mu.RLock()
 	defer lb.mu.RUnlock()
 
+	// 更新负载均衡器状态
 	lb.balancer.Feedback(ctx, instance, duration, err)
+
+	// 如果启用了故障转移，也更新故障转移组件的状态
+	if lb.enableFailover && instance != nil {
+		if err != nil {
+			lb.failover.GetDetector().MarkFailed(ctx, instance)
+		} else {
+			lb.failover.GetDetector().MarkSuccess(ctx, instance)
+		}
+	}
 }
 
 // watchUpdates 监听服务更新
@@ -116,6 +219,11 @@ func (lb *LoadBalancer) UpdateInstances(instances []*naming.Instance) error {
 	defer lb.mu.Unlock()
 
 	return lb.balancer.Update(instances)
+}
+
+// GetInstances 获取当前可用的服务实例列表
+func (lb *LoadBalancer) GetInstances() ([]*naming.Instance, error) {
+	return lb.resolver.Resolve()
 }
 
 // Close 关闭负载均衡器
@@ -165,4 +273,18 @@ func (lb *LoadBalancer) GetStats(ctx context.Context) (*Stats, error) {
 		HealthyCount:   healthyCount,
 		Latencies:      latencies,
 	}, nil
+}
+
+// IsFailoverEnabled 检查是否启用了故障转移功能
+func (lb *LoadBalancer) IsFailoverEnabled() bool {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+	return lb.enableFailover
+}
+
+// GetFailoverHandler 获取故障转移处理器
+func (lb *LoadBalancer) GetFailoverHandler() *failover.DefaultFailoverHandler {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+	return lb.failover
 }
