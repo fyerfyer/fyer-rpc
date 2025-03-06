@@ -2,10 +2,13 @@ package rpc
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net"
 	"reflect"
 
 	"github.com/fyerfyer/fyer-rpc/protocol"
+	"github.com/fyerfyer/fyer-rpc/utils"
 )
 
 type Server struct {
@@ -40,12 +43,15 @@ func (s *Server) RegisterService(service interface{}) error {
 		serviceName = serviceName[:len(serviceName)-4]
 	}
 
-	methods := make(map[string]reflect.Method)
+	// 使用utils.GetServiceMethods替代手动遍历
+	methods, err := utils.GetServiceMethods(service)
+	if err != nil {
+		return NewRPCError(ErrCodeInvalidParam, fmt.Sprintf("invalid service: %v", err))
+	}
 
-	// 获取所有方法并验证
-	for i := 0; i < serviceValue.Type().NumMethod(); i++ {
-		method := serviceValue.Type().Method(i)
-		methods[method.Name] = method
+	// 如果没有找到有效的方法
+	if len(methods) == 0 {
+		return NewRPCError(ErrCodeInvalidParam, "service has no valid RPC methods")
 	}
 
 	s.services[serviceName] = &ServiceDesc{
@@ -67,20 +73,24 @@ func (s *Server) handleConnection(conn net.Conn) {
 		// 读取请求消息
 		message, err := connection.Read()
 		if err != nil {
+			if err != io.EOF {
+				// 只有非EOF错误才记录
+				utils.Error("Failed to read message: %v", err)
+			}
 			return
 		}
 
 		// 查找服务
 		serviceDesc, ok := s.services[message.Metadata.ServiceName]
 		if !ok {
-			s.sendError(connection, message.Header.MessageID, "service not found")
+			s.sendError(connection, message.Header.MessageID, fmt.Sprintf("service not found: %s", message.Metadata.ServiceName))
 			continue
 		}
 
 		// 查找方法
 		method, ok := serviceDesc.Methods[message.Metadata.MethodName]
 		if !ok {
-			s.sendError(connection, message.Header.MessageID, "method not found")
+			s.sendError(connection, message.Header.MessageID, fmt.Sprintf("method not found: %s", message.Metadata.MethodName))
 			continue
 		}
 
@@ -91,9 +101,12 @@ func (s *Server) handleConnection(conn net.Conn) {
 			continue
 		}
 
-		reqArg := reflect.New(method.Type.In(2).Elem()).Interface()
+		// 创建请求参数实例
+		reqType := utils.GetRequestType(method)
+		reqArg := reflect.New(reqType).Interface()
+
 		if err := serializer.Decode(message.Payload, reqArg); err != nil {
-			s.sendError(connection, message.Header.MessageID, "invalid request parameters")
+			s.sendError(connection, message.Header.MessageID, fmt.Sprintf("failed to decode request: %v", err))
 			continue
 		}
 
@@ -101,38 +114,31 @@ func (s *Server) handleConnection(conn net.Conn) {
 		ctx := context.Background()
 
 		// 调用方法
-		results := method.Func.Call([]reflect.Value{
-			reflect.ValueOf(serviceDesc.Instance),
-			reflect.ValueOf(ctx),
-			reflect.ValueOf(reqArg),
-		})
+		resp, err := utils.InvokeMethod(ctx, serviceDesc.Instance, method, reqArg)
+		if err != nil {
+			s.sendError(connection, message.Header.MessageID, fmt.Sprintf("method execution error: %v", err))
+			continue
+		}
 
-		// 处理返回值
-		var respPayload []byte
-		var respErr string
-
-		if !results[1].IsNil() { // 如果有错误
-			respErr = results[1].Interface().(error).Error()
-		} else {
-			// 序列化返回值
-			respPayload, err = serializer.Encode(results[0].Interface())
-			if err != nil {
-				s.sendError(connection, message.Header.MessageID, "failed to marshal response")
-				continue
-			}
+		// 序列化响应
+		respData, err := serializer.Encode(resp)
+		if err != nil {
+			s.sendError(connection, message.Header.MessageID, fmt.Sprintf("failed to encode response: %v", err))
+			continue
 		}
 
 		// 发送响应
 		err = connection.Write(
-			message.Metadata.ServiceName,
-			message.Metadata.MethodName,
+			"",
+			"",
 			protocol.TypeResponse,
 			message.Header.SerializationType,
 			message.Header.MessageID,
-			&protocol.Metadata{Error: respErr},
-			respPayload,
+			nil,
+			respData,
 		)
 		if err != nil {
+			utils.Error("Failed to send response: %v", err)
 			return
 		}
 	}
