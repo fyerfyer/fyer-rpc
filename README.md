@@ -47,11 +47,6 @@ go get github.com/fyerfyer/fyer-rpc
 ### 定义服务接口
 
 ```go
-// user.go
-package service
-
-import "context"
-
 type User struct {
     Id   int64  `json:"id"`
     Name string `json:"name"`
@@ -66,19 +61,15 @@ type GetByIdResp struct {
 }
 
 // 使用结构体声明而非接口声明的方式声明方法
+
 type UserService struct {
-	GetById func(ctx context.Context, req *GetByIdReq) (*GetByIdResp, error)
+    GetById func(ctx context.Context, req *GetByIdReq) (*GetByIdResp, error)
 }
 ```
 
 ### 实现服务
 
 ```go
-// user_impl.go
-package service
-
-import "context"
-
 type UserServiceImpl struct{}
 
 func (s *UserServiceImpl) GetById(ctx context.Context, req *GetByIdReq) (*GetByIdResp, error) {
@@ -97,48 +88,41 @@ func (s *UserServiceImpl) GetById(ctx context.Context, req *GetByIdReq) (*GetByI
 
 ### 创建服务端
 
+这里仅展示通过`api`包创建服务端的方式，使用底层`rpc`包创建的方法参见docs文档。
+
 ```go
-package main
-
-import (
-    "log"
-    
-    "github.com/fyerfyer/fyer-rpc/rpc"
-    "yourpackage/service"
-)
-
 func main() {
+
     // 创建服务器
-    server := rpc.NewServer()
-    
+    server := api.NewServer(&api.ServerOptions{
+        Address: ":8000", // 服务监听地址
+        SerializeType: protocol.SerializationTypeJSON, // 使用JSON序列化
+    })
+	
     // 注册服务
-    err := server.RegisterService(&service.UserServiceImpl{})
+    service := &service.UserService{}
+    err := server.Register(service)
     if err != nil {
         log.Fatalf("Failed to register service: %v", err)
     }
     
-    // 启动服务
-    err = server.Start(":8080")
-    if err != nil {
+    // 启动服务器
+    if err := server.Start(); err != nil {
         log.Fatalf("Failed to start server: %v", err)
     }
+    
+    // 关闭服务器
+    defer func() {
+        if err := server.Stop(); err != nil {
+            log.Fatalf("Failed to stop server: %v", err)
+        }
+    }()
 }
 ```
 
 ### 创建客户端
 
 ```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "log"
-    
-    "github.com/fyerfyer/fyer-rpc/api"
-    "yourpackage/service"
-)
-
 func main() {
     // 创建客户端
     client, err := api.NewClient(&api.ClientOptions{
@@ -218,4 +202,4 @@ FyerRPC提供了丰富的配置选项，可以通过config包下的各种配置�
 
 ## 许可证
 
-项目使用MIT License
+项目使用MIT License。
