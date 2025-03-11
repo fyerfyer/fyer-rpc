@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"time"
 
@@ -12,10 +13,12 @@ import (
 )
 
 type Proxy struct {
-	pool           *ConnPool
-	loadBalancer   *discovery.LoadBalancer // 负载均衡器
-	enableFailover bool                    // 是否启用故障转移
-	failoverConfig *failover.Config        // 故障转移配置
+	pool            *ConnPool
+	loadBalancer    *discovery.LoadBalancer          // 负载均衡器
+	enableFailover  bool                             // 是否启用故障转移
+	failoverConfig  *failover.Config                 // 故障转移配置
+	serviceName     string                           // 服务名称
+	failoverHandler *failover.DefaultFailoverHandler // 故障转移处理器
 }
 
 // ProxyOption 代理配置选项
@@ -33,6 +36,18 @@ func WithProxyFailover(config *failover.Config) ProxyOption {
 	return func(p *Proxy) {
 		p.enableFailover = true
 		p.failoverConfig = config
+		// 创建故障转移处理器
+		handler, err := failover.NewFailoverHandler(config)
+		if err == nil {
+			p.failoverHandler = handler
+		}
+	}
+}
+
+// WithServiceName 设置服务名称
+func WithServiceName(serviceName string) ProxyOption {
+	return func(p *Proxy) {
+		p.serviceName = serviceName
 	}
 }
 
@@ -67,110 +82,33 @@ func InitProxy(address string, target interface{}, opts ...ProxyOption) error {
 	targetElem := targetValue.Elem()
 	targetType := targetElem.Type()
 	serviceName := targetType.Name()
+	if proxy.serviceName != "" {
+		serviceName = proxy.serviceName
+	}
 
 	// 根据目标类型区分处理方式
-	if targetElem.Kind() == reflect.Interface {
-		// 处理接口类型
-		for i := 0; i < targetType.NumMethod(); i++ {
-			method := targetType.Method(i)
-			handleMethod(proxy, targetElem, method, i, serviceName, pool)
-		}
-	} else if targetElem.Kind() == reflect.Struct {
+	if targetElem.Kind() == reflect.Struct {
 		// 处理结构体类型
 		for i := 0; i < targetType.NumField(); i++ {
 			field := targetType.Field(i)
+
 			// 检查字段是否为函数类型
 			if field.Type.Kind() == reflect.Func {
+				// 创建代理函数
 				handleStructField(proxy, targetElem, field, serviceName, pool)
 			}
 		}
 	} else {
-		return NewRPCError(ErrCodeInvalidParam, "target must be a pointer to interface or struct")
+		return NewRPCError(ErrCodeInvalidParam, "target must be a pointer to struct")
 	}
 
 	return nil
-}
-
-// handleMethod 处理接口方法的代理创建
-func handleMethod(proxy *Proxy, targetElem reflect.Value, method reflect.Method, index int, serviceName string, pool *ConnPool) {
-	// 创建代理函数
-	proxyFunc := reflect.MakeFunc(method.Type, func(args []reflect.Value) []reflect.Value {
-		// 从连接池获取连接
-		client, err := pool.Get()
-		if err != nil {
-			return createErrorReturn(method.Type, err)
-		}
-		defer pool.Put(client)
-
-		// 提取参数
-		ctx := args[0].Interface().(context.Context)
-		req := args[1].Interface()
-
-		var resp []byte
-		var callErr error
-
-		// 根据是否启用了故障转移和负载均衡，选择调用方式
-		if proxy.enableFailover && proxy.loadBalancer != nil {
-			// 获取当前可用的服务实例
-			instances, loadErr := proxy.loadBalancer.GetInstances()
-			if loadErr != nil {
-				callErr = loadErr
-			} else {
-				// 通过故障转移调用
-				resp, callErr = client.CallWithFailover(ctx, serviceName, method.Name, req, instances)
-			}
-		} else if proxy.loadBalancer != nil {
-			// 使用负载均衡器选择实例
-			err := proxy.loadBalancer.SelectWithFailover(ctx, func(ctx context.Context, instance *naming.Instance) error {
-				tmpClient, err := NewClient(instance.Address)
-				if err != nil {
-					return err
-				}
-				defer tmpClient.Close()
-
-				resp, callErr = tmpClient.CallWithTimeout(ctx, serviceName, method.Name, req)
-				return callErr
-			})
-			if err != nil {
-				callErr = err
-			}
-		} else {
-			// 直接调用
-			resp, callErr = client.CallWithTimeout(ctx, serviceName, method.Name, req)
-		}
-
-		if callErr != nil {
-			return createErrorReturn(method.Type, callErr)
-		}
-
-		// 解析响应
-		result := reflect.New(method.Type.Out(0).Elem()).Interface()
-		if err := json.Unmarshal(resp, result); err != nil {
-			rpcErr := NewRPCError(ErrCodeInternal, "failed to unmarshal response: "+err.Error())
-			return createErrorReturn(method.Type, rpcErr)
-		}
-
-		return []reflect.Value{
-			reflect.ValueOf(result),
-			reflect.Zero(method.Type.Out(1)), // nil error
-		}
-	})
-
-	// 设置代理方法到接口
-	targetElem.Method(index).Set(proxyFunc)
 }
 
 // handleStructField 处理结构体字段的代理创建
 func handleStructField(proxy *Proxy, targetElem reflect.Value, field reflect.StructField, serviceName string, pool *ConnPool) {
 	// 创建代理函数
 	proxyFunc := reflect.MakeFunc(field.Type, func(args []reflect.Value) []reflect.Value {
-		// 从连接池获取连接
-		client, err := pool.Get()
-		if err != nil {
-			return createErrorReturn(field.Type, err)
-		}
-		defer pool.Put(client)
-
 		// 提取参数
 		ctx := args[0].Interface().(context.Context)
 		req := args[1].Interface()
@@ -178,8 +116,84 @@ func handleStructField(proxy *Proxy, targetElem reflect.Value, field reflect.Str
 		// 方法名使用字段名
 		methodName := field.Name
 
-		// 直接调用
-		resp, callErr := client.CallWithTimeout(ctx, serviceName, methodName, req)
+		var resp []byte
+		var callErr error
+
+		// 使用负载均衡器进行调用
+		if proxy.loadBalancer != nil {
+			// 获取可用实例列表
+			instances, err := proxy.loadBalancer.GetInstances()
+			if err != nil {
+				return createErrorReturn(field.Type, fmt.Errorf("load balancing failed: %w", err))
+			}
+
+			// 使用故障转移机制
+			if proxy.enableFailover && proxy.failoverHandler != nil && len(instances) > 0 {
+				// 定义调用操作
+				operation := func(ctx context.Context, instance *naming.Instance) error {
+					// 创建到具体实例的新连接
+					client, err := NewClient(instance.Address)
+					if err != nil {
+						return err
+					}
+					defer client.Close()
+
+					// 执行RPC调用
+					resp, err = client.CallWithTimeout(ctx, serviceName, methodName, req)
+					return err
+				}
+
+				// 执行带故障转移的调用
+				result, err := proxy.failoverHandler.Execute(ctx, instances, operation)
+				if err != nil {
+					return createErrorReturn(field.Type, fmt.Errorf("failover failed: %w", err))
+				}
+
+				// 如果故障转移成功但没有设置响应，重新从返回的实例获取响应
+				if result.Success && resp == nil {
+					client, err := NewClient(result.Instance.Address)
+					if err != nil {
+						return createErrorReturn(field.Type, fmt.Errorf("failed to connect to selected instance: %w", err))
+					}
+					defer client.Close()
+
+					resp, callErr = client.CallWithTimeout(ctx, serviceName, methodName, req)
+				} else if !result.Success {
+					callErr = fmt.Errorf("no available instances after failover attempts")
+				}
+			} else {
+				// 使用负载均衡但不使用故障转移
+				instance, err := proxy.loadBalancer.Select(ctx)
+				if err != nil {
+					return createErrorReturn(field.Type, fmt.Errorf("load balancing selection failed: %w", err))
+				}
+
+				// 创建到选定实例的连接
+				client, err := NewClient(instance.Address)
+				if err != nil {
+					return createErrorReturn(field.Type, fmt.Errorf("failed to connect to selected instance: %w", err))
+				}
+				defer client.Close()
+
+				// 执行RPC调用
+				startTime := time.Now()
+				resp, callErr = client.CallWithTimeout(ctx, serviceName, methodName, req)
+				duration := time.Since(startTime)
+
+				// 反馈调用结果
+				proxy.loadBalancer.Feedback(ctx, instance, duration.Milliseconds(), callErr)
+			}
+		} else {
+			// 从连接池获取连接
+			client, err := pool.Get()
+			if err != nil {
+				return createErrorReturn(field.Type, err)
+			}
+			defer pool.Put(client)
+
+			// 直接调用原始地址
+			resp, callErr = client.CallWithTimeout(ctx, serviceName, methodName, req)
+		}
 
 		if callErr != nil {
 			return createErrorReturn(field.Type, callErr)
@@ -188,13 +202,13 @@ func handleStructField(proxy *Proxy, targetElem reflect.Value, field reflect.Str
 		// 解析响应
 		result := reflect.New(field.Type.Out(0).Elem()).Interface()
 		if err := json.Unmarshal(resp, result); err != nil {
-			rpcErr := NewRPCError(ErrCodeInternal, "failed to unmarshal response: "+err.Error())
-			return createErrorReturn(field.Type, rpcErr)
+			return createErrorReturn(field.Type, fmt.Errorf("failed to decode response: %w", err))
 		}
 
+		// 返回结果和nil错误
 		return []reflect.Value{
 			reflect.ValueOf(result),
-			reflect.Zero(field.Type.Out(1)), // nil error
+			reflect.Zero(field.Type.Out(1)),
 		}
 	})
 
@@ -208,10 +222,4 @@ func createErrorReturn(methodType reflect.Type, err error) []reflect.Value {
 		reflect.Zero(methodType.Out(0)),
 		reflect.ValueOf(&err).Elem(),
 	}
-}
-
-// Close 关闭代理的客户端连接
-func CloseProxy(target interface{}) error {
-	// 暂时不需要特别的清理逻辑，因为连接由池管理
-	return nil
 }

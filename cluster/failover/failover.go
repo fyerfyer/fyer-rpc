@@ -179,8 +179,8 @@ func NewFailoverHandler(config *Config) (*DefaultFailoverHandler, error) {
 }
 
 // Execute 执行带故障转移的调用
-// Execute 执行带故障转移的调用
-func (h *DefaultFailoverHandler) Execute(ctx context.Context, instances []*naming.Instance, operation func(context.Context, *naming.Instance) error) (*FailoverResult, error) {
+func (h *DefaultFailoverHandler) Execute(ctx context.Context, instances []*naming.Instance, operation func(context.Context,
+	*naming.Instance) error) (*FailoverResult, error) {
 	// 检查上下文是否已取消
 	if ctx.Err() != nil {
 		return &FailoverResult{

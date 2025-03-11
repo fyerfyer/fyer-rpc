@@ -61,6 +61,8 @@ type GetByIdResp struct {
 }
 
 // 使用结构体声明而非接口声明的方式声明方法
+// 方法的入参固定为*context.Context与*Request
+// 方法的返回值固定为*Response与error
 
 type UserService struct {
     GetById func(ctx context.Context, req *GetByIdReq) (*GetByIdResp, error)
@@ -71,6 +73,9 @@ type UserService struct {
 
 ```go
 type UserServiceImpl struct{}
+
+// 注意：服务实现的命名规范为：服务名(UserService)+Impl
+// 并且方法必须实现在结构体的接口上
 
 func (s *UserServiceImpl) GetById(ctx context.Context, req *GetByIdReq) (*GetByIdResp, error) {
     // 模拟实现
@@ -149,6 +154,31 @@ func main() {
 ```
 
 ## 高级功能
+
+### 使用代理简化调用
+
+FyerRPC提供了代理功能，用户可以选择使用代理、像调用本地方法一样调用远程方法，而不需要手动创建`Client`、调用`Call`方法、处理序列化/反序列化等，只需要在服务端实现接口并注册服务即可。
+
+```go
+// 初始化代理
+var userService UserService 
+err := rpc.InitProxy("localhost:8080", &userService)
+if err != nil {
+    panic(err)
+}
+
+// 直接调用，像本地方法一样
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+resp, err := userService.GetById(ctx, &GetByIdReq{Id: 123})
+if err != nil {
+    fmt.Printf("fail to call remote method: %v\n", err)
+    return
+}
+
+// 直接使用响应（无需手动解析）
+fmt.Printf("用户信息: ID=%d, Name=%s\n", resp.User.Id, resp.User.Name)
+```
 
 ### 使用服务发现
 
