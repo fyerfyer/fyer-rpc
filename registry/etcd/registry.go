@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/fyerfyer/fyer-rpc/naming"
 	"github.com/fyerfyer/fyer-rpc/registry"
@@ -19,7 +20,7 @@ import (
 type EtcdRegistry struct {
 	client   *clientv3.Client
 	options  *Options
-	locks    sync.Map                                      // 用于存储租约和key的对应关系
+	leases   sync.Map                                      // 用于存储租约和key的对应关系
 	watchers map[string]map[string]chan []*naming.Instance // service -> version -> channel
 	mu       sync.RWMutex
 }
@@ -90,7 +91,7 @@ func (r *EtcdRegistry) Register(ctx context.Context, service *naming.Instance) e
 	}
 
 	// 存储租约信息
-	r.locks.Store(key, lease.ID)
+	r.leases.Store(key, lease.ID)
 
 	// 启动心跳协程
 	go func() {
@@ -115,13 +116,13 @@ func (r *EtcdRegistry) Deregister(ctx context.Context, service *naming.Instance)
 	key := naming.BuildServiceKey(service.Service, service.Version, service.ID)
 
 	// 删除服务实例
-	if leaseID, ok := r.locks.Load(key); ok {
+	if leaseID, ok := r.leases.Load(key); ok {
 		// 撤销租约
 		_, err := r.client.Revoke(ctx, leaseID.(clientv3.LeaseID))
 		if err != nil {
 			return err
 		}
-		r.locks.Delete(key)
+		r.leases.Delete(key)
 	}
 
 	return nil
@@ -137,6 +138,15 @@ func (r *EtcdRegistry) Subscribe(ctx context.Context, service, version string) (
 		r.watchers[service] = make(map[string]chan []*naming.Instance)
 	}
 
+	// 生成唯一键
+	key := fmt.Sprintf("%s/%s", service, version)
+
+	// 检查是否已经存在相同服务和版本的订阅
+	if ch, ok := r.watchers[service][version]; ok {
+		// 已存在订阅，直接返回
+		return ch, nil
+	}
+
 	// 创建服务版本的订阅通道
 	ch := make(chan []*naming.Instance, 10)
 	r.watchers[service][version] = ch
@@ -144,10 +154,20 @@ func (r *EtcdRegistry) Subscribe(ctx context.Context, service, version string) (
 	// 获取当前服务列表
 	instances, err := r.ListServices(ctx, service, version)
 	if err != nil {
+		delete(r.watchers[service], version)
+		if len(r.watchers[service]) == 0 {
+			delete(r.watchers, service)
+		}
 		return nil, err
 	}
 
-	// 发送初始实例列表
+	// 创建一个独立的上下文，用于控制监听
+	watchCtx, cancel := context.WithCancel(context.Background())
+
+	// 存储取消函数，在Unsubscribe时调用
+	r.leases.Store(key, cancel)
+
+	// 启动监听协程前先发送初始数据
 	select {
 	case ch <- instances:
 	default:
@@ -156,14 +176,44 @@ func (r *EtcdRegistry) Subscribe(ctx context.Context, service, version string) (
 
 	// 启动监听协程
 	prefix := fmt.Sprintf("/fyerrpc/services/%s/%s/", service, version)
-	watchCh := r.client.Watch(ctx, prefix, clientv3.WithPrefix())
+	watchCh := r.client.Watch(watchCtx, prefix, clientv3.WithPrefix())
+
 	go func() {
-		defer close(ch)
+		// 监听退出时的清理工作
+		defer func() {
+			// 捕获可能的panic
+			if r := recover(); r != nil {
+				log.Printf("Recovered from panic in Subscribe goroutine: %v", r)
+			}
+
+			// 取消watchCtx避免资源泄露
+			cancel()
+
+			// 安全地关闭和清理通道
+			r.mu.Lock()
+			defer r.mu.Unlock()
+
+			// 再次检查watcher是否还存在，并且是否是我们期望的channel
+			if versionMap, serviceExists := r.watchers[service]; serviceExists {
+				if existingCh, versionExists := versionMap[version]; versionExists && existingCh == ch {
+					// 安全地删除映射并关闭通道
+					delete(r.watchers[service], version)
+					if len(r.watchers[service]) == 0 {
+						delete(r.watchers, service)
+					}
+					close(ch)
+				}
+			}
+		}()
+
 		for {
 			select {
-			case <-ctx.Done():
+			case <-watchCtx.Done():
 				return
-			case resp := <-watchCh:
+			case resp, ok := <-watchCh:
+				if !ok {
+					return
+				}
 				if resp.Canceled {
 					return
 				}
@@ -173,15 +223,32 @@ func (r *EtcdRegistry) Subscribe(ctx context.Context, service, version string) (
 				}
 
 				// 有任何事件发生时，重新获取完整的服务列表
-				instances, err := r.ListServices(ctx, service, version)
+				newCtx, cancel := context.WithTimeout(context.Background(), r.options.DialTimeout)
+				instances, err := r.ListServices(newCtx, service, version)
+				cancel() // 立即释放context资源
+
 				if err != nil {
 					log.Printf("list services error: %v", err)
 					continue
 				}
 
+				// 先检查通道是否还存在
+				r.mu.RLock()
+				_, serviceExists := r.watchers[service]
+				channelExists := false
+				if serviceExists {
+					_, channelExists = r.watchers[service][version]
+				}
+				r.mu.RUnlock()
+
+				if !channelExists {
+					return // 通道已被删除，停止goroutine
+				}
+
 				// 发送更新后的服务列表
 				select {
 				case ch <- instances:
+					// 成功发送
 				default:
 					// 通道已满，跳过本次更新
 				}
@@ -194,18 +261,43 @@ func (r *EtcdRegistry) Subscribe(ctx context.Context, service, version string) (
 
 // Unsubscribe 取消订阅服务变更
 func (r *EtcdRegistry) Unsubscribe(ctx context.Context, service, version string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	key := fmt.Sprintf("%s/%s", service, version)
 
-	if channels, ok := r.watchers[service]; ok {
-		if ch, ok := channels[version]; ok {
-			close(ch)
-			delete(channels, version)
-		}
-		if len(channels) == 0 {
-			delete(r.watchers, service)
+	// 首先取消监听上下文，这会触发监听goroutine结束
+	if cancelFunc, ok := r.leases.Load(key); ok {
+		cancel := cancelFunc.(context.CancelFunc)
+		cancel()
+		r.leases.Delete(key)
+	}
+
+	// 给监听goroutine一些时间来完成清理工作
+	r.mu.RLock()
+	hasService := false
+	if svcMap, ok := r.watchers[service]; ok {
+		_, hasService = svcMap[version]
+	}
+	r.mu.RUnlock()
+
+	// 如果监听goroutine没有及时清理，我们手动清理
+	if hasService {
+		time.Sleep(10 * time.Millisecond) // 给goroutine一点时间处理关闭
+
+		r.mu.Lock()
+		defer r.mu.Unlock()
+
+		// 再次检查是否已被清理
+		if svcMap, ok := r.watchers[service]; ok {
+			if ch, exists := svcMap[version]; exists {
+				// 安全地删除映射并关闭通道
+				delete(r.watchers[service], version)
+				if len(r.watchers[service]) == 0 {
+					delete(r.watchers, service)
+				}
+				close(ch)
+			}
 		}
 	}
+
 	return nil
 }
 
@@ -245,14 +337,25 @@ func (r *EtcdRegistry) Heartbeat(ctx context.Context, service *naming.Instance) 
 // Close 关闭注册中心
 func (r *EtcdRegistry) Close() error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
-	// 关闭所有监听器
-	for _, channels := range r.watchers {
-		for _, ch := range channels {
-			close(ch)
+	// 取消所有监听上下文
+	r.leases.Range(func(key, value interface{}) bool {
+		if cancel, ok := value.(context.CancelFunc); ok {
+			cancel()
 		}
+		return true
+	})
+
+	// 关闭所有监听器通道
+	for service, versions := range r.watchers {
+		for version, ch := range versions {
+			close(ch)
+			delete(versions, version)
+		}
+		delete(r.watchers, service)
 	}
+
+	r.mu.Unlock()
 
 	// 关闭etcd客户端
 	if r.client != nil {

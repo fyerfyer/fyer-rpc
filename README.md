@@ -177,7 +177,7 @@ if err != nil {
 }
 
 // 直接使用响应（无需手动解析）
-fmt.Printf("用户信息: ID=%d, Name=%s\n", resp.User.Id, resp.User.Name)
+fmt.Printf("user info: ID=%d, Name=%s\n", resp.User.Id, resp.User.Name)
 ```
 
 ### 使用服务发现
