@@ -5,17 +5,17 @@ import (
 	"fmt"
 )
 
-// 请求结构体
+// HelloRequest 请求结构体
 type HelloRequest struct {
 	Name string `json:"name"`
 }
 
-// 响应结构体
+// HelloResponse 响应结构体
 type HelloResponse struct {
 	Message string `json:"message"`
 }
 
-// 直接定义服务结构体
+// GreeterService 直接定义服务结构体
 type GreeterService struct{}
 
 // SayHello 方法实现

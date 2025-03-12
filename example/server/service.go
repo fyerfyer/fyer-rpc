@@ -131,12 +131,12 @@ func (s *GreetServer) heartbeat(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("Heartbeat for %s stopped", s.config.ID)
+			log.Printf("UpdateService for %s stopped", s.config.ID)
 			return
 		case <-ticker.C:
-			err := s.registry.Heartbeat(ctx, s.instance)
+			err := s.registry.UpdateService(ctx, s.instance)
 			if err != nil {
-				log.Printf("Heartbeat error for %s: %v", s.config.ID, err)
+				log.Printf("UpdateService error for %s: %v", s.config.ID, err)
 			}
 		}
 	}
