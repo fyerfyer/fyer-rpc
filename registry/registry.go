@@ -23,7 +23,7 @@ type Registry interface {
 	ListServices(ctx context.Context, service string, version string) ([]*naming.Instance, error)
 
 	// Heartbeat 服务心跳
-	Heartbeat(ctx context.Context, service *naming.Instance) error
+	UpdateService(ctx context.Context, service *naming.Instance) error
 
 	// Close 关闭注册中心连接
 	Close() error

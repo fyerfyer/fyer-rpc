@@ -321,8 +321,8 @@ func (r *EtcdRegistry) ListServices(ctx context.Context, service, version string
 	return instances, nil
 }
 
-// Heartbeat 服务心跳
-func (r *EtcdRegistry) Heartbeat(ctx context.Context, service *naming.Instance) error {
+// UpdateService 更新服务
+func (r *EtcdRegistry) UpdateService(ctx context.Context, service *naming.Instance) error {
 	key := naming.BuildServiceKey(service.Service, service.Version, service.ID)
 	value, err := json.Marshal(service)
 	if err != nil {

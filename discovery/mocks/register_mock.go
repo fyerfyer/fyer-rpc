@@ -114,12 +114,12 @@ func (_c *Registry_Deregister_Call) RunAndReturn(run func(context.Context, *nami
 	return _c
 }
 
-// Heartbeat provides a mock function with given fields: ctx, service
-func (_m *Registry) Heartbeat(ctx context.Context, service *naming.Instance) error {
+// UpdateService provides a mock function with given fields: ctx, service
+func (_m *Registry) UpdateService(ctx context.Context, service *naming.Instance) error {
 	ret := _m.Called(ctx, service)
 
 	if len(ret) == 0 {
-		panic("no return value specified for Heartbeat")
+		panic("no return value specified for UpdateService")
 	}
 
 	var r0 error
@@ -132,7 +132,7 @@ func (_m *Registry) Heartbeat(ctx context.Context, service *naming.Instance) err
 	return r0
 }
 
-// Registry_Heartbeat_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Heartbeat'
+// Registry_Heartbeat_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'UpdateService'
 type Registry_Heartbeat_Call struct {
 	*mock.Call
 }
@@ -141,7 +141,7 @@ type Registry_Heartbeat_Call struct {
 //   - ctx context.Context
 //   - service *naming.Instance
 func (_e *Registry_Expecter) Heartbeat(ctx interface{}, service interface{}) *Registry_Heartbeat_Call {
-	return &Registry_Heartbeat_Call{Call: _e.mock.On("Heartbeat", ctx, service)}
+	return &Registry_Heartbeat_Call{Call: _e.mock.On("UpdateService", ctx, service)}
 }
 
 func (_c *Registry_Heartbeat_Call) Run(run func(ctx context.Context, service *naming.Instance)) *Registry_Heartbeat_Call {

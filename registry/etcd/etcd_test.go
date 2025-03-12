@@ -8,6 +8,7 @@ import (
 	"github.com/fyerfyer/fyer-rpc/naming"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 // createRegistry 创建测试用的registry实例
@@ -35,9 +36,18 @@ func createTestInstance(id, service, version, address string) *naming.Instance {
 	}
 }
 
+func cleanRegistry(t *testing.T, registry *EtcdRegistry) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	_, err := registry.client.Delete(ctx, "/fyerrpc/services/", clientv3.WithPrefix())
+	require.NoError(t, err)
+}
+
 func TestRegisterSingle(t *testing.T) {
 	registry := createRegistry(t)
 	defer registry.Close()
+	cleanRegistry(t, registry)
 
 	ctx := context.Background()
 	instance := createTestInstance("test-instance-1", "test-service", "1.0.0", "localhost:8080")
@@ -60,6 +70,7 @@ func TestRegisterSingle(t *testing.T) {
 func TestRegisterMultiple(t *testing.T) {
 	registry := createRegistry(t)
 	defer registry.Close()
+	cleanRegistry(t, registry)
 
 	ctx := context.Background()
 	instances := []*naming.Instance{
@@ -98,6 +109,7 @@ func TestRegisterMultiple(t *testing.T) {
 func TestSubscribeSingle(t *testing.T) {
 	registry := createRegistry(t)
 	defer registry.Close()
+	cleanRegistry(t, registry)
 
 	ctx := context.Background()
 	instance := createTestInstance("test-subscribe-1", "test-subscribe", "1.0.0", "localhost:8080")
@@ -124,6 +136,7 @@ func TestSubscribeSingle(t *testing.T) {
 func TestSubscribeMultiple(t *testing.T) {
 	registry := createRegistry(t)
 	defer registry.Close()
+	cleanRegistry(t, registry)
 
 	ctx := context.Background()
 	instance1 := createTestInstance("test-subscribe-1", "test-subscribe", "1.0.0", "localhost:8080")
@@ -170,6 +183,7 @@ func TestSubscribeMultiple(t *testing.T) {
 func TestHeartbeat(t *testing.T) {
 	registry := createRegistry(t)
 	defer registry.Close()
+	cleanRegistry(t, registry)
 
 	ctx := context.Background()
 	instance := createTestInstance("test-heartbeat", "test-service", "1.0.0", "localhost:8082")
@@ -180,7 +194,7 @@ func TestHeartbeat(t *testing.T) {
 	defer registry.Deregister(ctx, instance)
 
 	// 发送心跳
-	err = registry.Heartbeat(ctx, instance)
+	err = registry.UpdateService(ctx, instance)
 	assert.NoError(t, err)
 
 	// 等待并验证服务存活
@@ -201,6 +215,7 @@ func TestHeartbeat(t *testing.T) {
 func TestDeregister(t *testing.T) {
 	registry := createRegistry(t)
 	defer registry.Close()
+	cleanRegistry(t, registry)
 
 	ctx := context.Background()
 	instance := createTestInstance("test-deregister", "test-service", "1.0.0", "localhost:8080")

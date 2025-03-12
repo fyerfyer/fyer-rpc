@@ -2,7 +2,6 @@ package discovery
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"time"
 
@@ -20,7 +19,7 @@ type LoadBalancer struct {
 	metrics        metrics.Metrics                  // 指标收集器
 	serviceName    string                           // 服务名称
 	version        string                           // 服务版本
-	updateChan     <-chan struct{}                  // 服务更新通知通道
+	updateChan     <-chan struct{}                  // 服务更新通知通道　ｆｓ　ｓｄｆ
 	closed         chan struct{}                    // 关闭信号
 	enableFailover bool                             // 是否启用故障转移
 	mu             sync.RWMutex
@@ -97,35 +96,7 @@ func (lb *LoadBalancer) Select(ctx context.Context) (*naming.Instance, error) {
 	lb.mu.RLock()
 	defer lb.mu.RUnlock()
 
-	if !lb.enableFailover {
-		// 直接使用负载均衡器选择实例
-		return lb.balancer.Select(ctx)
-	}
-
-	// 获取当前可用实例
-	instances, err := lb.resolver.Resolve()
-	if err != nil {
-		return nil, err
-	}
-
-	if len(instances) == 0 {
-		return nil, errors.New("no available instances")
-	}
-
-	// 使用故障转移处理器执行操作
-	// 定义操作函数：使用负载均衡器选择实例
-	operation := func(ctx context.Context, _ *naming.Instance) error {
-		_, err := lb.balancer.Select(ctx)
-		return err
-	}
-
-	// 执行故障转移
-	result, err := lb.failover.Execute(ctx, instances, operation)
-	if err != nil {
-		return nil, err
-	}
-
-	return result.Instance, nil
+	return lb.balancer.Select(ctx)
 }
 
 // SelectWithFailover 选择一个服务实例并执行操作，支持故障转移
