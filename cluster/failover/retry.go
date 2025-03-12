@@ -63,7 +63,7 @@ func (p *SimpleRetryPolicy) NextBackoff(_ int) time.Duration {
 	return p.interval
 }
 
-// 指数退避重试策略
+// ExponentialBackoffRetryPolicy 指数退避重试策略
 type ExponentialBackoffRetryPolicy struct {
 	BaseRetryPolicy
 	initialInterval time.Duration
@@ -118,7 +118,7 @@ func (p *ExponentialBackoffRetryPolicy) NextBackoff(attempt int) time.Duration {
 	return interval
 }
 
-// 带抖动的重试策略（避免重试风暴）
+// JitteredRetryPolicy 带抖动的重试策略（避免重试风暴）
 type JitteredRetryPolicy struct {
 	BaseRetryPolicy
 	initialInterval time.Duration
@@ -228,7 +228,7 @@ func (p *ContextBasedRetryPolicy) MaxAttempts() int {
 	return p.maxAttempts
 }
 
-// 工厂函数，根据配置创建重试策略
+// NewRetryPolicy 工厂函数，根据配置创建重试策略
 func NewRetryPolicy(config *Config) RetryPolicy {
 	switch config.RetryStrategy {
 	case "simple":

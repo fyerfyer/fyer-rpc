@@ -19,7 +19,7 @@ type LoadBalancer struct {
 	metrics        metrics.Metrics                  // 指标收集器
 	serviceName    string                           // 服务名称
 	version        string                           // 服务版本
-	updateChan     <-chan struct{}                  // 服务更新通知通道　ｆｓ　ｓｄｆ
+	updateChan     <-chan struct{}                  // 服务更新通知通道
 	closed         chan struct{}                    // 关闭信号
 	enableFailover bool                             // 是否启用故障转移
 	mu             sync.RWMutex
