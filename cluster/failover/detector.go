@@ -339,7 +339,7 @@ func (d *HealthCheckDetector) Detect(ctx context.Context, instance *naming.Insta
 	return d.GetStatus(instance), nil
 }
 
-// 创建检测器的工厂函数
+// NewDetector 创建检测器的工厂函数
 func NewDetector(config *Config, detectorType string) Detector {
 	switch detectorType {
 	case "timeout":

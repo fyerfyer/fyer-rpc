@@ -48,7 +48,7 @@ func (m *SimpleInstanceMonitor) ReportSuccess(ctx context.Context, instance *nam
 		stats.AvgResponseTime = time.Duration(newAvg)
 	}
 
-	atomic.StoreInt32((*int32)(&stats.ConsecutiveFailures), 0)
+	atomic.StoreInt32(&stats.ConsecutiveFailures, 0)
 }
 
 // ReportFailure 报告失败请求

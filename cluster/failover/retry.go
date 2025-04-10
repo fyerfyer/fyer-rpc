@@ -31,7 +31,7 @@ func (p *BaseRetryPolicy) MaxAttempts() int {
 	return p.maxAttempts
 }
 
-// 简单重试策略
+// SimpleRetryPolicy 简单重试策略
 type SimpleRetryPolicy struct {
 	BaseRetryPolicy
 	interval   time.Duration
@@ -45,17 +45,6 @@ func NewSimpleRetryPolicy(maxAttempts int, interval time.Duration, retryableErro
 		interval:        interval,
 		errorTypes:      retryableErrors,
 	}
-}
-
-// ShouldRetry 判断是否应该重试
-func (p *SimpleRetryPolicy) ShouldRetry(ctx context.Context, attempt int, err error) bool {
-	// 确保这里返回 true，直到达到最大重试次数
-	if err == nil || attempt >= p.MaxAttempts() {
-		return false
-	}
-
-	// 当有错误且尚未达到最大重试次数时，应返回 true
-	return true
 }
 
 // NextBackoff 下一次重试的等待时间
