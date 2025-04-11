@@ -2,6 +2,8 @@
 
 FyerRPC是一个轻量级、高性能的Go语言RPC框架，提供了简单易用的API，同时具备服务发现、负载均衡、故障转移等企业级特性。
 
+**文档**：[fyer-rpc文档](https://fyerfyer.github.io/fyer-rpc)
+
 ## 功能特性
 
 - **简洁API**：易于集成和使用的客户端和服务端API
@@ -366,3 +368,7 @@ Protobuf序列化比JSON快约5倍，特别适合对性能要求高的场景。�
 ## 许可证
 
 项目使用MIT License。
+
+------
+
+详细文档请访问：[fyer-rpc文档](https://fyerfyer.github.io/fyer-rpc)
